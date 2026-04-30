@@ -126,4 +126,20 @@
             btn.classList.add('opacity-0', 'pointer-events-none');
         }
     });
+    
+    // Language switcher function
+    function switchLanguage(locale) {
+        fetch('/api/set-locale', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ locale })
+        }).then(() => location.reload());
+    }
+    
+    // CSRF token meta tag
+    document.querySelector('head').insertAdjacentHTML('beforeend', 
+        '<meta name="csrf-token" content="<?= $_SESSION['csrf_token'] ?? '' ?>">'
+    );
 </script>

@@ -1,31 +1,32 @@
 ```
+# Compiled and build artifacts
+*.pyc
+__pycache__/
+
 # Dependencies
 vendor/
+node_modules/
+composer.lock
 
-# Logs
+# Logs and temp files
 *.log
+*.tmp
 
 # Environment
 .env
 .env.local
 .env.*
 
-# IDE
+# Editors
 .vscode/
 .idea/
 
-# OS
+# OS generated files
 .DS_Store
 Thumbs.db
 
-# PHP
-*.php~
-*.php.bak
-*.swp
-*.swo
-
-# Build artifacts
-build/
+# Build directories
 dist/
-*.phar
+build/
+target/
 ```

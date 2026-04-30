@@ -14,7 +14,9 @@ class Tour extends Model {
      */
     public function getFeatured(int $limit = 6): array {
         $sql = "SELECT t.*, 
-                (SELECT image_path FROM tour_images WHERE tour_id = t.id AND is_main = 1 LIMIT 1) as main_image
+                (SELECT image_path FROM tour_images WHERE tour_id = t.id AND is_main = 1 LIMIT 1) as main_image,
+                (SELECT JSON_ARRAYAGCAT(JSON_OBJECT('id', r.id, 'name_ru', r.name_ru, 'name_en', r.name_en, 'name_kg', r.name_kg))
+                 FROM tour_regions tr JOIN regions r ON tr.region_id = r.id WHERE tr.tour_id = t.id) as regions_json
                 FROM {$this->table} t 
                 WHERE t.is_active = 1 AND t.is_featured = 1 
                 ORDER BY t.created_at DESC 
@@ -24,7 +26,187 @@ class Tour extends Model {
         $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
         $stmt->execute();
         
+        $tours = $stmt->fetchAll();
+        
+        // Parse regions JSON
+        foreach ($tours as &$tour) {
+            if ($tour['regions_json']) {
+                $tour['regions'] = json_decode($tour['regions_json'], true) ?? [];
+            } else {
+                $tour['regions'] = [];
+            }
+            unset($tour['regions_json']);
+        }
+        
+        return $tours;
+    }
+    
+    /**
+     * Get tours with advanced filters
+     */
+    public function getWithFilters(array $filters = [], int $page = 1, int $perPage = 12): array {
+        $where = ['t.is_active = 1'];
+        $params = [];
+        
+        // Region filter
+        if (!empty($filters['region'])) {
+            $where[] = "tr.region_id = :region";
+            $params['region'] = $filters['region'];
+        }
+        
+        // Difficulty filter
+        if (!empty($filters['difficulty'])) {
+            $where[] = "t.difficulty = :difficulty";
+            $params['difficulty'] = $filters['difficulty'];
+        }
+        
+        // Duration range
+        if (!empty($filters['duration_min'])) {
+            $where[] = "t.duration_days >= :duration_min";
+            $params['duration_min'] = $filters['duration_min'];
+        }
+        if (!empty($filters['duration_max'])) {
+            $where[] = "t.duration_days <= :duration_max";
+            $params['duration_max'] = $filters['duration_max'];
+        }
+        
+        // Price range
+        if (!empty($filters['price_min'])) {
+            $where[] = "t.price_from >= :price_min";
+            $params['price_min'] = $filters['price_min'];
+        }
+        if (!empty($filters['price_max'])) {
+            $where[] = "t.price_from <= :price_max";
+            $params['price_max'] = $filters['price_max'];
+        }
+        
+        // Tour type filter
+        if (!empty($filters['type'])) {
+            $where[] = "t.type = :type";
+            $params['type'] = $filters['type'];
+        }
+        
+        // Search by keyword
+        if (!empty($filters['search'])) {
+            $where[] = "(t.title_ru LIKE :search OR t.title_en LIKE :search OR t.title_kg LIKE :search OR t.full_description_ru LIKE :search)";
+            $params['search'] = '%' . $filters['search'] . '%';
+        }
+        
+        $whereClause = implode(' AND ', $where);
+        
+        // Build join for regions if needed
+        $join = '';
+        if (!empty($filters['region'])) {
+            $join = "LEFT JOIN tour_regions tr ON t.id = tr.tour_id";
+        }
+        
+        // Get total count
+        $countSql = "SELECT COUNT(DISTINCT t.id) as total FROM {$this->table} t $join WHERE $whereClause";
+        $countStmt = $this->db->prepare($countSql);
+        $countStmt->execute($params);
+        $total = (int) $countStmt->fetch()['total'];
+        
+        // Pagination
+        $offset = ($page - 1) * $perPage;
+        
+        // Get records
+        $sql = "SELECT DISTINCT t.*, 
+                (SELECT image_path FROM tour_images WHERE tour_id = t.id AND is_main = 1 LIMIT 1) as main_image
+                FROM {$this->table} t 
+                $join 
+                WHERE $whereClause 
+                ORDER BY t.created_at DESC 
+                LIMIT $perPage OFFSET $offset";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        $tours = $stmt->fetchAll();
+        
+        // Get regions for each tour
+        foreach ($tours as &$tour) {
+            $tour['regions'] = $this->getTourRegions($tour['id']);
+        }
+        
+        return [
+            'data' => $tours,
+            'pagination' => [
+                'total' => $total,
+                'per_page' => $perPage,
+                'current_page' => $page,
+                'last_page' => ceil($total / $perPage),
+            ]
+        ];
+    }
+    
+    /**
+     * Find tour by slug
+     */
+    public function findBySlug(string $slug): ?array {
+        $sql = "SELECT t.* FROM {$this->table} t 
+                WHERE t.slug = :slug AND t.is_active = 1 
+                LIMIT 1";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute(['slug' => $slug]);
+        $tour = $stmt->fetch();
+        
+        if (!$tour) {
+            return null;
+        }
+        
+        // Increment views
+        $this->incrementViews($tour['id']);
+        
+        // Get region IDs
+        $regionIds = $this->getTourRegionIds($tour['id']);
+        $tour['region_ids'] = $regionIds;
+        
+        return $tour;
+    }
+    
+    /**
+     * Get tour images
+     */
+    public function getImages(int $tourId): array {
+        $sql = "SELECT * FROM tour_images WHERE tour_id = :tour_id ORDER BY sort_order ASC, is_main DESC";
+        
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute(['tour_id' => $tourId]);
         return $stmt->fetchAll();
+    }
+    
+    /**
+     * Get related tours
+     */
+    public function getRelated(int $excludeId, array $regionIds, int $limit = 4): array {
+        if (empty($regionIds)) {
+            return [];
+        }
+        
+        $placeholders = implode(',', array_fill(0, count($regionIds), '?'));
+        $sql = "SELECT DISTINCT t.*, 
+                (SELECT image_path FROM tour_images WHERE tour_id = t.id AND is_main = 1 LIMIT 1) as main_image
+                FROM {$this->table} t
+                INNER JOIN tour_regions tr ON t.id = tr.tour_id
+                WHERE t.id != ? 
+                AND t.is_active = 1
+                AND tr.region_id IN ($placeholders)
+                LIMIT $limit";
+        
+        $params = array_merge([$excludeId], $regionIds);
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute($params);
+        return $stmt->fetchAll();
+    }
+    
+    /**
+     * Get region IDs for a tour
+     */
+    private function getTourRegionIds(int $tourId): array {
+        $sql = "SELECT region_id FROM tour_regions WHERE tour_id = :tour_id";
+        $stmt = $this->db->prepare($sql);
+        $stmt->execute(['tour_id' => $tourId]);
+        return array_column($stmt->fetchAll(), 'region_id');
     }
     
     /**

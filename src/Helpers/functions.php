@@ -120,6 +120,16 @@ function csrfField(): string {
 }
 
 /**
+ * Verify CSRF token
+ */
+function verifyCsrfToken(string $token): bool {
+    if (empty($token) || empty($_SESSION['csrf_token'])) {
+        return false;
+    }
+    return hash_equals($_SESSION['csrf_token'], $token);
+}
+
+/**
  * Check if current route matches
  */
 function isActiveRoute(string $route): bool {
